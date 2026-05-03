@@ -1,0 +1,13 @@
+{
+  "name": "stadium-advisory-platform",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace @stadium/web run dev",
+    "dev:api": "npm --workspace @stadium/api run dev",
+    "lint:web": "npm --workspace @stadium/web run lint",
+    "start:api": "npm --workspace @stadium/api run start"
+  }
+}
