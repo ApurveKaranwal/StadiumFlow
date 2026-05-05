@@ -1,59 +1,73 @@
 # Stadium Flow Advisory
 
-Stadium Flow Advisory is a monorepo for a stadium entry-routing platform. It has:
+Stadium Flow Advisory is a full-stack prototype for stadium entry management. It recommends the fastest gate for a fan based on walking time plus queue delay, lets fans report and verify crowd conditions, and gives organizers a live control surface for gate operations, alerts, and crowd-photo privacy masking.
 
-- a `Next.js` fan and organizer frontend in `apps/web`
-- an `Express` + `sql.js` backend in `apps/api`
-- a local SQLite file for persistence
-- live gate recommendation logic based on walking time plus queue delay
-- a crowd-report verification loop that can change routing after enough nearby fans confirm the same issue
-- a lightweight reward system for detours and verified reporting
+This repository is a monorepo with:
 
-This repository currently ships as a working prototype. It includes real UI flows, persistent backend state, seeded sample gate data, organizer tools, and deployment configuration for the API.
+- a `Next.js` frontend in `apps/web`
+- an `Express` API in `apps/api`
+- a file-backed SQLite database implemented through `sql.js`
+
+The current codebase is a working prototype, not a hardened production system. The major end-to-end flows are implemented, but there is no authentication, no automated test suite, and no anti-abuse layer.
 
 ## What The Project Does
 
-For fans:
+### Fan-facing features
 
-- reads the fan's geolocation
-- requests the best gate recommendation from the API
-- shows the route on a Leaflet map
-- displays queue pressure, live updates, and reward profile data
-- allows fans to submit crowd reports
-- allows nearby fans to verify reports
-- awards detour points and redeemable food-discount points
+- Requests the user's geolocation and computes the fastest visible gate.
+- Combines walking time and queue delay instead of using nearest-gate routing only.
+- Draws the recommended walking route on a Leaflet map.
+- Shows live queue pressure, verified crowd signals, and an update feed.
+- Lets fans submit crowd reports tied to a gate and GPS position.
+- Lets nearby fans verify pending reports.
+- Updates routing impact once enough nearby fans confirm the same report.
+- Tracks a reward profile with detour points, report reputation, and food-perk redemption.
 
-For organizers:
+### Organizer-facing features
 
-- manages gates, coordinates, visibility, service rates, queue length, and crowd score
-- publishes live operational updates
-- sees live fan-submitted crowd reports
-- uses a visual command-center UI for manual reroute simulations
-- uses an in-browser privacy masking tool for crowd photos and live camera frames
+- Lists all gates and supports editing their operational properties.
+- Creates new gates with map-assisted coordinate placement.
+- Toggles gate visibility so hidden gates drop out of routing.
+- Adjusts queue length, service rate, crowd score, and directional hints.
+- Publishes organizer updates into the shared live feed.
+- Shows recent fan-submitted reports and whether they are pending or verified.
+- Includes a visual command center for manual reroute simulation and localized alert blasting.
+- Includes a browser-only privacy studio for blurring faces in uploaded photos or live camera frames.
 
 ## Repository Layout
 
 ```text
 .
 |- apps/
-|  |- api/                  Express API + SQLite/sql.js backend
-|  `- web/                  Next.js frontend
-|- contracts/               Present but currently empty
-|- DOCUMENTATION.md         Detailed technical documentation
-|- render.yaml              Render Blueprint for the API service
-`- RENDER_API_DEPLOY.md     Short Render deployment note
+|  |- api/
+|  |  |- data/                  Primary API database location
+|  |  `- src/
+|  |     |- config/
+|  |     |- controllers/
+|  |     |- routes/
+|  |     `- services/
+|  `- web/
+|     |- app/
+|     |- components/
+|     `- lib/
+|- contracts/                   Present but currently empty
+|- DOCUMENTATION.md             Full technical documentation
+|- README.md
+|- package.json
+`- package-lock.json
 ```
 
 ## Tech Stack
 
-Frontend:
+### Frontend
 
 - Next.js `14.2.5`
 - React `18.3.1`
 - TypeScript
-- Leaflet + OpenStreetMap tiles
+- Leaflet
+- OpenStreetMap tiles
 
-Backend:
+### Backend
 
 - Node.js
 - Express `4.21.2`
@@ -61,87 +75,82 @@ Backend:
 - CORS
 - dotenv
 
-Persistence and data:
+### Browser and external APIs
 
-- SQLite database file stored at `apps/api/data/stadium-flow.sqlite` by default
-
-External services and browser APIs:
-
-- OSRM public routing API at `https://router.project-osrm.org`
-- browser Geolocation API
-- browser MediaDevices API
-- browser FaceDetector API when available
+- Browser Geolocation API
+- Browser MediaDevices API
+- Browser `FaceDetector` API when available
 - OpenCV.js fallback for face detection and blur
+- Public OSRM walking-route API at `https://router.project-osrm.org`
 
-## Architecture Summary
+## High-Level Architecture
 
-The frontend talks directly to the API using fetch calls in [`apps/web/lib/api.ts`](/abs/path/C:/StadiumFlow/apps/web/lib/api.ts). The backend exposes four API groups:
+The frontend talks directly to the backend over HTTP using helpers in `apps/web/lib/api.ts`.
+
+The backend exposes four main API groups:
 
 - `/api/gates`
 - `/api/reports`
 - `/api/updates`
 - `/api/rewards`
 
-The API boots by:
+At startup, the API:
 
-1. loading environment variables
-2. connecting to the SQLite database through `sql.js`
-3. creating tables if they do not already exist
-4. seeding initial gate and update records when the database is empty
-5. starting the Express server
+1. loads environment variables from `apps/api/.env`
+2. initializes the SQLite database through `sql.js`
+3. creates required tables if they are missing
+4. seeds starter gates and one starter update when the database is empty
+5. starts the Express server
 
-Fan routing is computed server-side. Each visible gate is scored as:
+Routing is computed server-side. Each visible gate is scored as:
 
 `totalMinutes = walkingMinutes + queueMinutes`
-
-Walking time comes from OSRM when available. If OSRM fails, the server falls back to a local haversine-based straight-line estimate.
 
 Queue time is estimated from:
 
 `queueLength / adjustedServiceRate`
 
-where `adjustedServiceRate = max(serviceRatePerMinute - liveCrowdScore * 0.05, 1)`
+where:
 
-Crowd reports do not immediately change routing. A report must be verified by enough nearby fans before the backend:
+`adjustedServiceRate = max(serviceRatePerMinute - liveCrowdScore * 0.05, 1)`
 
-- marks it as verified
-- increases the target gate's queue and live crowd score
-- creates a system update about the verified pressure
-- awards reputation and points
+Crowd reports do not immediately affect routing. A report changes routing only after it reaches the configured verification threshold.
 
 ## Main User Flows
 
 ### Fan flow
 
-1. User opens `/fan`.
-2. Frontend loads gates, updates, live crowd state, and reward profile.
-3. Frontend requests GPS permission.
-4. If GPS succeeds, frontend requests `/api/gates/recommendation`.
-5. API ranks visible gates and returns the best option plus alternatives.
-6. Fan can:
-   - refresh route
-   - sync GPS again
+1. Open `/fan`.
+2. The frontend restores the display name from `localStorage` key `fan-name`.
+3. The dashboard loads gates, updates, reward profile, and live crowd state.
+4. The browser requests geolocation permission.
+5. If location is available, the frontend requests `/api/gates/recommendation`.
+6. The API returns the recommended gate, alternatives, and route data.
+7. The fan can:
+   - refresh the route
+   - resync GPS
    - claim detour points
-   - redeem food discounts
+   - redeem a food discount
    - submit a crowd report
    - verify nearby pending reports
 
 ### Organizer flow
 
-1. User opens `/organizer`.
-2. Frontend loads gates, updates, and live crowd state.
-3. Organizer can:
-   - edit or create gates
-   - place or move gates on a map
-   - toggle gate visibility
+1. Open `/organizer`.
+2. The frontend loads gates, updates, and live crowd state.
+3. The organizer can:
+   - select and edit gates
+   - create a new gate
+   - drag or click on the map to set coordinates
    - update queue and crowd simulation values
-   - publish feed updates
-   - use the command center to draft reroute alerts
+   - hide a gate from fan routing
+   - publish organizer updates
+   - use the command center to draft localized alerts
    - use the privacy studio to blur faces before export
 
 ## Prerequisites
 
-- Node.js `18+` is recommended
+- Node.js `18+`
 - npm
 
 ## Installation
@@ -154,29 +163,41 @@ npm install
 
 ## Environment Variables
 
-Two environment files are expected for local development.
+### API: `apps/api/.env`
 
-### `apps/api/.env`
+The API loads environment variables from `apps/api/.env`.
+
+Example:
 
 ```env
 PORT=4000
 CLIENT_ORIGIN=http://localhost:3000
-SQLITE_PATH=./apps/api/data/stadium-flow.sqlite
 REPORT_VERIFICATION_THRESHOLD=3
 REPORT_RADIUS_METERS=160
 REPORT_WINDOW_MINUTES=8
 ```
 
+Optional:
+
+```env
+SQLITE_PATH=./data/stadium-flow.sqlite
+```
+
 Meaning:
 
-- `PORT`: API server port
-- `CLIENT_ORIGIN`: allowed CORS origin for the frontend
-- `SQLITE_PATH`: path to the SQLite database file
-- `REPORT_VERIFICATION_THRESHOLD`: votes needed to mark a crowd report as verified
-- `REPORT_RADIUS_METERS`: maximum distance allowed for report verification
-- `REPORT_WINDOW_MINUTES`: active report cache window used for live snapshots
+- `PORT`: API port.
+- `CLIENT_ORIGIN`: allowed CORS origin for the frontend.
+- `SQLITE_PATH`: database file path. If omitted, the API defaults to `apps/api/data/stadium-flow.sqlite`.
+- `REPORT_VERIFICATION_THRESHOLD`: total votes needed to verify a crowd report.
+- `REPORT_RADIUS_METERS`: maximum distance from a report location allowed for verification.
+- `REPORT_WINDOW_MINUTES`: live snapshot window for recent reports.
 
-### `apps/web/.env.local`
+Important path note:
+
+- If you set `SQLITE_PATH` inside `apps/api/.env`, use `./data/stadium-flow.sqlite`, not `./apps/api/data/stadium-flow.sqlite`.
+- The longer path creates a nested `apps/api/apps/api/data` directory when the API runs from the workspace package directory.
+
+### Web: `apps/web/.env.local`
 
 ```env
 NEXT_PUBLIC_API_BASE_URL=http://localhost:4000/api
@@ -184,7 +205,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:4000/api
 
 Meaning:
 
-- `NEXT_PUBLIC_API_BASE_URL`: public base URL used by the frontend fetch client
+- `NEXT_PUBLIC_API_BASE_URL`: public API base URL used by the frontend.
 
 ## Running Locally
 
@@ -208,8 +229,6 @@ Default local URLs:
 
 ## Available Root Scripts
 
-At the repository root:
-
 ```bash
 npm run dev:web
 npm run dev:api
@@ -217,15 +236,9 @@ npm run lint:web
 npm run start:api
 ```
 
-## Database Behavior
+## Data Model
 
-The backend uses `sql.js`, but persists its exported database bytes into a normal SQLite file path. On each write:
-
-- SQL runs in-memory
-- the database is exported
-- the file is overwritten at `SQLITE_PATH`
-
-Default tables:
+The API persists five tables:
 
 - `gates`
 - `updates`
@@ -233,22 +246,18 @@ Default tables:
 - `crowd_reports`
 - `crowd_report_votes`
 
-On first boot, the seed service inserts:
+Seed data on first boot:
 
-- 4 starter gates
-- 1 starter organizer update
+- 4 gates
+- 1 organizer update
+
+The starter coordinates are around Mumbai and the date formatting in the UI uses `en-IN`.
 
 ## API Overview
 
 ### Health
 
 - `GET /health`
-
-Returns:
-
-```json
-{ "ok": true }
-```
 
 ### Gates
 
@@ -275,7 +284,7 @@ Returns:
 - `POST /api/rewards/detour-points`
 - `POST /api/rewards/redeem-food`
 
-Full endpoint details are documented in [`DOCUMENTATION.md`](/abs/path/C:/StadiumFlow/DOCUMENTATION.md).
+`DOCUMENTATION.md` contains the full endpoint behavior, response shapes, and implementation notes.
 
 ## Frontend Routes
 
@@ -283,64 +292,96 @@ Full endpoint details are documented in [`DOCUMENTATION.md`](/abs/path/C:/Stadiu
 - `/fan` fan dashboard
 - `/organizer` organizer dashboard
 
-## Important Implementation Details
+## Feature Inventory
 
-- There is no authentication or role-based access control yet.
-- Organizer actions are open to any user who can access the organizer page.
-- Fan identity is just a display name stored in `localStorage` under `fan-name`.
-- The frontend polls for live updates:
-  - fan dashboard: every 15 seconds
-  - organizer dashboard: every 10 seconds
-- The API CORS policy allows a single origin from `CLIENT_ORIGIN`.
-- Hidden gates are excluded from recommendation scoring.
-- Detour points are not tied to proof of physical arrival; the frontend can claim them once conditions are met.
-- Reward redemption uses points only. There is no coupon issuance service yet.
-- The command center is currently a frontend simulation plus update publisher. It does not directly mutate gate routing data.
-- The privacy studio runs entirely in the browser and can export masked images.
+### Routing and recommendations
 
-## Deployment
+- Visible gates only are eligible for recommendation.
+- Walking routes come from OSRM when available.
+- If OSRM fails, the backend falls back to haversine distance plus a fixed walking speed.
+- Each gate gets a status of `optimal`, `steady`, or `congested`.
+- The API returns a recommendation summary, alternatives, saved minutes, and a detour incentive payload.
 
-The repository includes a Render Blueprint in [`render.yaml`](/abs/path/C:/StadiumFlow/render.yaml).
+### Crowd reporting
 
-It provisions:
+- A submitted report starts as `pending`.
+- The author's submission immediately counts as the first vote.
+- Nearby fans can verify a report only once.
+- Verification requires being within the configured distance radius.
+- Once the threshold is met, the report becomes `verified`.
 
-- a Node web service named `stadiumflow-api`
-- root directory `apps/api`
-- `npm install` as the build command
-- `npm start` as the start command
-- `/health` as the health check
-- a persistent disk mounted at `/opt/render/project/src/data`
+### Verified crowd-pressure effects
 
-Render-specific SQLite path:
+- Verified reports raise the target gate's queue length and crowd score to at least the configured level floor.
+- A system-generated organizer-style update is written to the feed.
+- Routing responses reflect the changed gate state on subsequent requests.
 
-```env
-SQLITE_PATH=/opt/render/project/src/data/stadium-flow.sqlite
-```
+### Rewards
 
-The disk is required because Render's default filesystem is ephemeral.
+- Detour acceptance can award `40` points.
+- Verified report authors get `30` points and `+2` report reputation.
+- Additional verifiers get `10` points and `+1` report reputation.
+- Food discount redemption costs `200` points.
 
-See [`RENDER_API_DEPLOY.md`](/abs/path/C:/StadiumFlow/RENDER_API_DEPLOY.md) for the short deployment note.
+### Fan dashboard
 
-## Current Gaps And Limitations
+- Polls live data every `15` seconds.
+- Displays route summary, alternative gates, queue charts, and report verification cards.
+- Stores fan identity only as a display name in browser `localStorage`.
 
-- No automated tests are present in the repository.
-- No CI configuration is present.
-- No auth, sessions, or permissions exist.
-- No rate limiting or abuse controls exist for report submission or reward claiming.
-- OSRM uses a public endpoint; availability and latency are external dependencies.
-- The API performs minimal validation and has no schema-validation layer.
-- `contracts/` exists but currently contains no source files.
-- There is no frontend production deployment configuration in this repository.
+### Organizer dashboard
 
-## Recommended Next Steps
+- Polls live data every `10` seconds.
+- Supports gate creation, editing, visibility toggling, and coordinate placement.
+- Shows active fan reports and a shared timeline of updates.
 
-- add request validation with a schema library
-- add authentication for organizer actions
-- move reward claiming behind a verified arrival or gate-scan event
-- add automated tests for routing, verification, and reward logic
-- add structured logging and error monitoring
-- define the purpose of `contracts/` or remove it if unused
+### Command center
 
-## Detailed Documentation
+- Uses a blueprint-style interface with sectors and corridors.
+- Accepts draggable barricade tokens.
+- Tracks local corridor status as open, rerouted, or closed.
+- Publishes sector alerts through the real updates API.
 
-For the deeper technical reference, read [`DOCUMENTATION.md`](/abs/path/C:/StadiumFlow/DOCUMENTATION.md).
+### Privacy studio
+
+- Works fully in-browser.
+- Supports uploaded photos and live camera mode.
+- Uses browser `FaceDetector` first.
+- Falls back to OpenCV.js Haar cascade detection if available.
+- Supports manual masking rectangles.
+- Exports protected frames as PNG files.
+
+## Current Limitations
+
+- No authentication or authorization.
+- No organizer-only backend protection.
+- No rate limiting or anti-spam controls.
+- No proof-of-arrival check for detour rewards.
+- No coupon issuance service for redemptions.
+- No automatic decay of crowd pressure after verification.
+- No automated tests.
+- No CI configuration.
+- `contracts/` exists but is empty.
+- No committed deployment manifest is present in the repository root.
+
+## Documentation Guide
+
+Read `DOCUMENTATION.md` for:
+
+- complete architecture details
+- database schema
+- endpoint-by-endpoint API documentation
+- routing algorithm notes
+- frontend feature breakdown
+- known gaps and implementation caveats
+
+## Quick File Guide
+
+- `apps/api/src/server.js`: API bootstrap
+- `apps/api/src/config/database.js`: database initialization and persistence
+- `apps/api/src/services/routingService.js`: route scoring
+- `apps/api/src/services/crowdReportService.js`: reporting and verification logic
+- `apps/api/src/services/rewardService.js`: rewards
+- `apps/web/components/FanDashboard.tsx`: fan experience
+- `apps/web/components/OrganizerDashboard.tsx`: organizer experience
+- `apps/web/components/CrowdPrivacyStudio.tsx`: privacy masking feature

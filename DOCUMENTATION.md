@@ -1,17 +1,24 @@
 # Stadium Flow Advisory Documentation
 
-This document is the detailed technical reference for the Stadium Flow Advisory repository. It is based on the current implementation in the codebase, not on a hypothetical target architecture.
+This document is the implementation-level reference for the current repository state. It describes the behavior that is actually present in the codebase as of this revision, including important limitations, edge cases, and mismatches that matter for anyone running or extending the project.
 
-## 1. Project Purpose
+## 1. Project Overview
 
-Stadium Flow Advisory is a crowd-aware entry-routing prototype for sports venues or large event spaces. The goal is to direct fans to the fastest practical entry gate by combining:
+Stadium Flow Advisory is a stadium-entry routing prototype with two primary operating modes:
 
-- walking time from the fan's current location
-- current queue length at each gate
-- a live crowd-pressure signal
-- organizer-configured operational hints
+- a fan experience that recommends the fastest gate based on walking and queue time
+- an organizer experience that manages gates, publishes alerts, and monitors live crowd signals
 
-The system also lets fans contribute live crowd reports, lets nearby fans verify those reports, and lets organizers manage gates and publish operational updates.
+The core idea is that the nearest gate is not always the fastest gate. The backend ranks gates by total time, not proximity alone:
+
+`totalMinutes = walkingMinutes + queueMinutes`
+
+The system also adds a lightweight social trust loop:
+
+- fans can file live crowd reports
+- nearby fans can verify those reports
+- verified reports affect gate congestion modeling
+- verified reporting awards points and reporting reputation
 
 ## 2. Monorepo Structure
 
@@ -32,70 +39,80 @@ The system also lets fans contribute live crowd reports, lets nearby fans verify
 |- contracts/
 |- DOCUMENTATION.md
 |- README.md
-|- render.yaml
-`- RENDER_API_DEPLOY.md
+|- package.json
+`- package-lock.json
 ```
+
+Notes:
+
+- `contracts/` exists but is empty.
+- The repository does not currently include `render.yaml` or `RENDER_API_DEPLOY.md`, even though older docs referenced them.
 
 ## 3. Applications
 
 ### 3.1 `apps/web`
 
-The frontend is a Next.js App Router application. It contains:
+This is a Next.js App Router application. It contains:
 
-- landing page UI
-- fan dashboard UI
-- organizer dashboard UI
-- shared client-side API utilities
+- the landing page
+- the fan dashboard
+- the organizer dashboard
+- shared API helpers
 - shared frontend types
-- Leaflet map components
-- client-side privacy masking tooling
+- Leaflet maps
+- organizer-only command center UI
+- organizer-only privacy masking tool
 
 ### 3.2 `apps/api`
 
-The backend is an Express application. It contains:
+This is an Express API application. It contains:
 
-- environment configuration
+- environment loading
 - SQLite persistence through `sql.js`
-- seed logic
-- routing logic
-- crowd-report and verification logic
+- schema bootstrap logic
+- starter seeding
+- routing calculation
+- crowd-report verification rules
 - reward logic
-- REST controllers and routes
+- route handlers and controllers
 
 ## 4. Runtime Architecture
 
-### 4.1 Frontend to backend flow
+### 4.1 Frontend-to-backend flow
 
-The frontend calls the backend directly over HTTP. The API base URL is controlled by `NEXT_PUBLIC_API_BASE_URL`.
+The frontend uses fetch-based helpers in `apps/web/lib/api.ts` to call the API directly. All live requests are made with `cache: "no-store"` so the UI always requests fresh data.
 
-Shared request helpers are in [`apps/web/lib/api.ts`](/abs/path/C:/StadiumFlow/apps/web/lib/api.ts).
+### 4.2 Backend startup flow
 
-### 4.2 Backend boot flow
-
-Server startup is defined in [`apps/api/src/server.js`](/abs/path/C:/StadiumFlow/apps/api/src/server.js):
+Defined in `apps/api/src/server.js`:
 
 1. connect to the database
-2. create required tables if missing
+2. create tables if they do not exist
 3. seed starter data if the database is empty
 4. start Express on `env.port`
 
-### 4.3 Data persistence model
+### 4.3 Persistence model
 
-The backend uses `sql.js`, which runs SQLite in-process. It persists by exporting the in-memory database to a file on each write. This is implemented in [`apps/api/src/config/database.js`](/abs/path/C:/StadiumFlow/apps/api/src/config/database.js).
+Persistence is implemented in `apps/api/src/config/database.js`.
+
+The API uses `sql.js`, which means:
+
+- SQLite runs in memory inside the Node process
+- writes are persisted by exporting the database to a file after each mutation
 
 Implications:
 
-- no external database server is required
-- local development is easy
-- write throughput is limited compared to a full server-backed database
-- persistence depends on a writable filesystem
-- production deployment must use persistent storage if data should survive restarts
+- easy local setup
+- no external database server required
+- every write rewrites the database file
+- scaling characteristics are limited compared with a real multi-process DB setup
+- production durability depends on a persistent filesystem
 
 ## 5. Configuration
 
-### 5.1 Root workspace
+### 5.1 Root workspace configuration
 
-The root [`package.json`](/abs/path/C:/StadiumFlow/package.json) uses npm workspaces:
+The root `package.json` uses npm workspaces:
 
 - `apps/*`
 
@@ -106,9 +123,15 @@ Root scripts:
 - `lint:web`
 - `start:api`
 
-### 5.2 API environment variables
+### 5.2 API configuration
 
-Defined in [`apps/api/src/config/env.js`](/abs/path/C:/StadiumFlow/apps/api/src/config/env.js):
+Environment loading is implemented in `apps/api/src/config/env.js`.
+
+The API reads environment variables from:
+
+- `apps/api/.env`
+
+Supported variables:
 
 - `PORT`
 - `SQLITE_PATH`
@@ -125,9 +148,25 @@ Defaults:
 - `REPORT_RADIUS_METERS=160`
 - `REPORT_WINDOW_MINUTES=8`
 
-### 5.3 Web environment variables
+Database path behavior:
 
-Used in [`apps/web/lib/api.ts`](/abs/path/C:/StadiumFlow/apps/web/lib/api.ts):
+- if `SQLITE_PATH` is unset, the API uses `apps/api/data/stadium-flow.sqlite`
+- if `SQLITE_PATH` is set inside `apps/api/.env`, it should normally be `./data/stadium-flow.sqlite`
+
+Observed repository detail:
+
+- the repo currently contains both `apps/api/data/stadium-flow.sqlite`
+- and `apps/api/apps/api/data/stadium-flow.sqlite`
+
+That nested path is usually created by setting:
+
+`SQLITE_PATH=./apps/api/data/stadium-flow.sqlite`
+
+inside `apps/api/.env`, then running the API from the `apps/api` workspace directory.
+
+### 5.3 Web configuration
+
+The frontend uses:
 
 - `NEXT_PUBLIC_API_BASE_URL`
 
@@ -137,17 +176,17 @@ Default:
 
 ## 6. Database Schema
 
-Table creation is implemented in [`apps/api/src/config/database.js`](/abs/path/C:/StadiumFlow/apps/api/src/config/database.js).
+Table creation is handled in `apps/api/src/config/database.js`.
 
 ### 6.1 `gates`
 
 Columns:
 
 - `id` integer primary key
-- `gate_id` unique text gate code
-- `gate_name` text display name
+- `gate_id` unique text code
+- `gate_name` text display label
 - `display_order` integer
-- `visible` integer boolean flag
+- `visible` integer boolean
 - `zone_label` text
 - `latitude` real
 - `longitude` real
@@ -160,7 +199,7 @@ Columns:
 
 Purpose:
 
-- organizer-managed source of truth for available stadium gates
+- organizer-managed source of truth for fan-visible and simulation-visible gates
 
 ### 6.2 `updates`
 
@@ -177,7 +216,7 @@ Columns:
 
 Purpose:
 
-- stores organizer broadcasts and system-generated updates
+- shared timeline for organizer-posted and system-generated updates
 
 ### 6.3 `reward_profiles`
 
@@ -195,7 +234,7 @@ Columns:
 
 Purpose:
 
-- persistent reward and reporting reputation state for each fan display name
+- persistent reward and reporting stats for each display name
 
 ### 6.4 `crowd_reports`
 
@@ -217,7 +256,7 @@ Columns:
 
 Purpose:
 
-- stores crowdsourced event observations tied to a gate and location
+- stores crowdsourced crowd-condition reports
 
 ### 6.5 `crowd_report_votes`
 
@@ -236,35 +275,44 @@ Constraint:
 
 Purpose:
 
-- records which fans verified a report and prevents duplicate verification by the same fan
+- prevents duplicate verification by the same display name on the same report
 
 ## 7. Seed Data
 
-Seeding is implemented in [`apps/api/src/services/seedService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/seedService.js).
+Seeding is implemented in `apps/api/src/services/seedService.js`.
 
-On first run the API inserts:
+Inserted when the database is empty:
 
 - 4 gates
-  - `gate-1` North Stand
-  - `gate-2` East Stand
-  - `gate-3` South Stand
-  - `gate-4` West Stand
-- 1 organizer update from `Venue Ops`
+- 1 organizer update
 
-Seed coordinates are around Mumbai. The UI and sample messaging also imply an India-focused demo context.
+Starter gates:
 
-## 8. API Layer
+- `gate-1` / `Gate 1` / `North Stand`
+- `gate-2` / `Gate 2` / `East Stand`
+- `gate-3` / `Gate 3` / `South Stand`
+- `gate-4` / `Gate 4` / `West Stand`
 
-### 8.1 Express application
+Seed characteristics:
 
-Defined in [`apps/api/src/app.js`](/abs/path/C:/StadiumFlow/apps/api/src/app.js).
+- all gates start visible
+- gate queues and crowd scores are intentionally uneven to make routing interesting
+- sample coordinates are clustered around Mumbai
+
+Starter update:
+
+- `Venue Ops` posts one important `operations` update announcing that the organizer dashboard is live
+
+## 8. Express Application Layer
+
+Defined in `apps/api/src/app.js`.
 
 Middleware:
 
 - `cors({ origin: env.clientOrigin })`
 - `express.json()`
 
-Registered routes:
+Routes:
 
 - `/health`
 - `/api/gates`
@@ -272,23 +320,17 @@ Registered routes:
 - `/api/updates`
 - `/api/rewards`
 
-### 8.2 Error handling style
+Error handling style:
 
-The codebase currently uses controller-local `try/catch` blocks. There is no centralized Express error middleware.
-
-Effects:
-
-- responses are simple and consistent enough for the prototype
-- stack traces are not exposed to clients
-- error classification is coarse
+- each controller uses local `try/catch`
+- there is no centralized Express error middleware
+- backend error messaging is prototype-level and not deeply classified
 
 ## 9. API Reference
 
-All response examples below describe the shape returned by the current code.
+This section documents what the current code returns and enforces.
 
-### 9.1 Health
-
-#### `GET /health`
+### 9.1 `GET /health`
 
 Response:
 
@@ -300,15 +342,16 @@ Response:
 
 Implemented by:
 
-- routes: [`apps/api/src/routes/gateRoutes.js`](/abs/path/C:/StadiumFlow/apps/api/src/routes/gateRoutes.js)
-- controller: [`apps/api/src/controllers/gateController.js`](/abs/path/C:/StadiumFlow/apps/api/src/controllers/gateController.js)
+- `apps/api/src/routes/gateRoutes.js`
+- `apps/api/src/controllers/gateController.js`
 
 #### `GET /api/gates`
 
-Returns all gates ordered by:
+Behavior:
 
-1. `display_order`
-2. `gate_name`
+- returns all gates
+- orders by `display_order`, then `gate_name`
+- includes hidden gates
 
 Response:
 
@@ -342,10 +385,12 @@ Required query params:
 
 Behavior:
 
-- only visible gates are considered
-- each visible gate is scored
-- recommended gate is the one with the smallest `totalMinutes`
-- API also returns whether fan consent is needed before claiming detour points
+- validates only that both params parse to finite numbers
+- loads only visible gates
+- returns `404` if no visible gates exist
+- computes walking time and queue time per gate
+- selects the gate with the smallest total time
+- returns the recommended gate plus alternatives
 
 Response shape:
 
@@ -388,12 +433,13 @@ Response shape:
 
 Notes:
 
-- `matchId` is currently a static placeholder: `"live-match"`
-- `needsConsentForLongerWalk` is `true` when the recommended gate is not the nearest walking gate and saves at least 5 minutes
+- `matchId` is currently a fixed placeholder string: `"live-match"`
+- `needsConsentForLongerWalk` is `true` only when:
+  - the recommended gate is not the nearest-walking gate
+  - and `savedMinutes >= 5`
+- `detourIncentive` is informational only; there is no proof-of-arrival enforcement
 
 #### `POST /api/gates`
-
-Creates a gate.
 
 Expected body fields:
 
@@ -409,16 +455,22 @@ Expected body fields:
 - `liveCrowdScore`
 - `directionHint`
 
-Observations:
+Behavior:
 
-- validation is minimal
-- duplicate `gateId` fails because of the database uniqueness constraint
+- minimal validation
+- numeric fields are cast with `Number(...)`
+- duplicate `gateId` fails through the DB unique constraint
+- returns `400` on failure with a generic message
 
 #### `PUT /api/gates/:gateId`
 
-Updates an existing gate by `gate_id`.
+Behavior:
 
-Updatable fields:
+- updates an existing gate by `gate_id`
+- `gate_id` itself is not editable through this endpoint
+- returns `404` if the gate does not exist
+
+Editable fields:
 
 - `gateName`
 - `displayOrder`
@@ -435,9 +487,9 @@ Updatable fields:
 
 Implemented by:
 
-- routes: [`apps/api/src/routes/reportRoutes.js`](/abs/path/C:/StadiumFlow/apps/api/src/routes/reportRoutes.js)
-- controller: [`apps/api/src/controllers/reportController.js`](/abs/path/C:/StadiumFlow/apps/api/src/controllers/reportController.js)
-- service: [`apps/api/src/services/crowdReportService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/crowdReportService.js)
+- `apps/api/src/routes/reportRoutes.js`
+- `apps/api/src/controllers/reportController.js`
+- `apps/api/src/services/crowdReportService.js`
 
 #### `GET /api/reports`
 
@@ -449,19 +501,24 @@ Optional query params:
 
 Behavior:
 
-- returns up to 30 reports ordered by latest first
-- if `gateId` is provided, filters by gate
-- if `latitude` and `longitude` are provided, filters to reports within `REPORT_RADIUS_METERS * 2`
+- loads at most 30 reports ordered newest first
+- filters by `gateId` if supplied
+- if both `latitude` and `longitude` are present, filters to reports within `REPORT_RADIUS_METERS * 2`
+
+Important nuance:
+
+- the location filter is applied in memory after querying recent reports
+- it is not a geospatial DB query
 
 #### `GET /api/reports/live`
 
-Returns a live crowd-state bundle:
+Returns a live bundle with:
 
 - `activeReports`
 - `activeSnapshots`
 - `gateSummaries`
 
-`gateSummaries` includes:
+`gateSummaries` contains:
 
 - `gateId`
 - `pendingReports`
@@ -470,9 +527,11 @@ Returns a live crowd-state bundle:
 - `queueLength`
 - `liveCrowdScore`
 
-#### `POST /api/reports`
+Purpose:
 
-Creates a new crowd report.
+- this is the main fan and organizer dashboard live-state endpoint
+
+#### `POST /api/reports`
 
 Required body fields:
 
@@ -485,13 +544,13 @@ Required body fields:
 
 Behavior:
 
-- verifies the gate exists
-- creates a reward profile for the fan if one does not already exist
+- ensures the gate exists
+- lazily creates a reward profile if needed
 - inserts the report as `pending`
-- sets `verification_count = 1` immediately because the author's own vote is recorded
-- records the author's vote in `crowd_report_votes`
+- sets `verification_count = 1` immediately
+- records the author's own vote in `crowd_report_votes`
 - increments `live_reports_submitted`
-- caches the report snapshot in memory
+- stores a recent snapshot in memory
 
 Returned fields:
 
@@ -509,8 +568,6 @@ Returned fields:
 
 #### `POST /api/reports/:reportId/verify`
 
-Verifies an existing crowd report.
-
 Required body fields:
 
 - `fanName`
@@ -521,22 +578,23 @@ Rules:
 
 - the report must exist
 - the verifying fan must be within `REPORT_RADIUS_METERS`
-- a fan cannot verify the same report twice
-- once vote count reaches `REPORT_VERIFICATION_THRESHOLD`, the report becomes `verified`
+- the same fan cannot verify twice
+- verification is keyed by display name, not account identity
+- once the vote count reaches `REPORT_VERIFICATION_THRESHOLD`, the report becomes `verified`
 
-When a report becomes verified, the backend also:
+When a report becomes verified, the backend:
 
-1. marks the report snapshot verified
-2. applies pressure to the related gate
-3. creates a system update
-4. awards reward points and reputation
+1. marks the in-memory snapshot verified
+2. updates the gate queue and crowd score
+3. creates a system update in the feed
+4. awards reputation and reward points
 
 ### 9.4 Updates API
 
 Implemented by:
 
-- routes: [`apps/api/src/routes/updateRoutes.js`](/abs/path/C:/StadiumFlow/apps/api/src/routes/updateRoutes.js)
-- controller: [`apps/api/src/controllers/updateController.js`](/abs/path/C:/StadiumFlow/apps/api/src/controllers/updateController.js)
+- `apps/api/src/routes/updateRoutes.js`
+- `apps/api/src/controllers/updateController.js`
 
 #### `GET /api/updates`
 
@@ -546,29 +604,35 @@ Optional query param:
 
 Behavior:
 
-- returns up to 50 updates ordered by latest first
+- returns at most 50 updates
+- newest first
 - can filter by `authorType`
 
 #### `POST /api/updates`
 
-Required body fields:
+Required:
 
 - `authorType`
 - `authorName`
 - `message`
 
-Optional fields:
+Optional:
 
 - `priority`, default `"normal"`
 - `context`, default `"operations"`
+
+Behavior:
+
+- used by organizer dashboard and command center
+- also matches the shape used by system-created updates
 
 ### 9.5 Rewards API
 
 Implemented by:
 
-- routes: [`apps/api/src/routes/rewardRoutes.js`](/abs/path/C:/StadiumFlow/apps/api/src/routes/rewardRoutes.js)
-- controller: [`apps/api/src/controllers/rewardController.js`](/abs/path/C:/StadiumFlow/apps/api/src/controllers/rewardController.js)
-- service: [`apps/api/src/services/rewardService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/rewardService.js)
+- `apps/api/src/routes/rewardRoutes.js`
+- `apps/api/src/controllers/rewardController.js`
+- `apps/api/src/services/rewardService.js`
 
 #### `GET /api/rewards/profile?fanName=...`
 
@@ -579,7 +643,7 @@ Required query param:
 Behavior:
 
 - returns the reward profile
-- creates the profile first if it does not exist
+- creates it if it does not exist yet
 
 Response fields:
 
@@ -603,44 +667,39 @@ Required body fields:
 Behavior:
 
 - awards 40 points
-- increments `completed_detours`
+- increments completed detours
+- returns a success message plus the updated profile
 
 Important limitation:
 
-- backend does not verify actual gate arrival
-- `gateName` and `matchId` are accepted for messaging but are not used in reward logic
+- `gateName` and `matchId` are required for request shape and messaging only
+- backend reward logic does not validate that the fan actually reached the gate
 
 #### `POST /api/rewards/redeem-food`
 
-Required body field:
+Required:
 
 - `fanName`
 
 Behavior:
 
 - requires at least 200 points
-- deducts 200 points
+- subtracts 200 points
+- returns a message plus the updated profile
 
-Constants:
+Important limitation:
 
-- detour award: `40`
-- discount threshold: `200`
+- no coupon code, voucher object, or third-party redemption integration is created
 
 ## 10. Routing Logic
 
-Implemented in [`apps/api/src/services/routingService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/routingService.js).
+Routing is implemented in `apps/api/src/services/routingService.js`.
 
-### 10.1 Queue-time estimation
+### 10.1 Queue estimation
 
 Function:
 
 `estimateQueueMinutes(queueLength, serviceRatePerMinute, liveCrowdScore)`
-
-Logic:
-
-- reduces effective service rate based on crowd score
-- enforces a minimum service rate of `1`
-- rounds queue time to whole minutes
 
 Formula:
 
@@ -648,9 +707,15 @@ Formula:
 
 `queueMinutes = round(queueLength / adjustedRate)`
 
-### 10.2 Walking-route retrieval
+Effects:
 
-The backend uses [`apps/api/src/services/osrmService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/osrmService.js).
+- higher crowd score reduces effective throughput
+- throughput never drops below `1`
+- queue results are rounded to whole minutes
+
+### 10.2 Walking route source
+
+Walking routes come from `apps/api/src/services/osrmService.js`.
 
 External endpoint:
 
@@ -662,31 +727,31 @@ Requested options:
 - `geometries=geojson`
 - `steps=false`
 
-Returned values:
+Returned route data:
 
 - distance in meters
 - duration in seconds
-- decoded route coordinates
+- route coordinates decoded into `{ latitude, longitude }` objects
 
 ### 10.3 Fallback routing
 
-If OSRM fails, the API falls back to:
+If OSRM fails for any reason:
 
-- haversine straight-line distance
-- a fixed walking speed assumption of `4.8 km/h`
-- a 2-point line from origin to gate
+- the backend estimates straight-line distance with haversine math
+- assumes walking speed of `4.8 km/h`
+- returns a 2-point line from origin to destination
 
-This keeps the system usable even if OSRM is unavailable.
+This keeps recommendations available even when OSRM is down or unreachable.
 
-### 10.4 Gate status classification
+### 10.4 Gate status bands
 
-`statusFor(totalMinutes)` returns:
+Gate status is derived from total minutes:
 
 - `optimal` if `<= 8`
 - `steady` if `<= 15`
 - `congested` otherwise
 
-### 10.5 Recommendation payload
+### 10.5 Recommendation payload structure
 
 The routing service returns:
 
@@ -702,24 +767,31 @@ The controller adds:
 - `needsConsentForLongerWalk`
 - `detourIncentive`
 
-## 11. Crowd-Report Verification Model
+## 11. Crowd Reporting And Verification Model
 
-The verification system is implemented mainly in [`apps/api/src/services/crowdReportService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/crowdReportService.js) and [`apps/api/src/services/reportCacheService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/reportCacheService.js).
+Implemented mainly in:
 
-### 11.1 Pending versus verified reports
+- `apps/api/src/services/crowdReportService.js`
+- `apps/api/src/services/reportCacheService.js`
+
+### 11.1 Report lifecycle
 
 Every new report starts as:
 
 - `status = "pending"`
 - `verification_count = 1`
 
-The first count comes from the author's own submission vote.
+The first count comes from the author's own vote.
 
 ### 11.2 Distance gating
 
-Verification requires physical proximity. The backend computes the verifying fan's distance from the report location using haversine distance.
+Verification requires spatial proximity.
 
-Default threshold:
+The backend computes distance with haversine math and rejects verifications farther than:
+
+- `REPORT_RADIUS_METERS`
+
+Default:
 
 - `160 meters`
 
@@ -729,23 +801,27 @@ Default threshold:
 
 - `3`
 
-That means one author vote plus two additional nearby verifications will typically verify the report.
+In the default setup, that usually means:
+
+- 1 author vote
+- 2 additional nearby fans
 
 ### 11.4 Snapshot cache
 
-The backend maintains an in-memory map of recent report snapshots. This cache:
+The backend keeps a recent in-memory snapshot map for live crowd display.
 
+The cache:
+
+- stores recent report snapshots
+- tracks voters in a `Set`
 - expires entries after `REPORT_WINDOW_MINUTES`
-- remembers active voters
-- helps serve a recent live state
+- supplements the database for live dashboards
 
-It does not replace the database. It is a temporary live-view layer.
+It does not replace the database and is lost on process restart.
 
 ### 11.5 Gate pressure application
 
-When a report becomes verified, the backend applies a crowd profile to the related gate.
-
-Current crowd profiles:
+When a report becomes verified, the backend applies a crowd profile:
 
 - `low` => queue `10`, score `8`
 - `medium` => queue `35`, score `24`
@@ -754,81 +830,100 @@ Current crowd profiles:
 
 Behavior:
 
-- queue length becomes `max(currentQueue, profile.queueDelta)`
-- crowd score becomes `max(currentScore, profile.scoreDelta)`
+- `queue_length = max(currentQueue, profile.queueDelta)`
+- `live_crowd_score = max(currentScore, profile.scoreDelta)`
 
-This means verified pressure can only push values upward to at least the configured profile minimum. It does not decay automatically.
+Implication:
 
-### 11.6 System-generated updates
+- verified crowd pressure can only push a gate upward to at least that floor
+- there is no automatic decay back down over time
 
-Once a report is verified, the backend writes an organizer-style update like:
+### 11.6 System updates on verification
+
+Once verified, the backend inserts an update like:
 
 - `Gate X crowd level verified as high. Routing has been updated for nearby fans.`
 
-These updates appear in the shared feed.
+These appear in the same updates feed used by organizers.
 
-## 12. Reward System
+## 12. Reward Model
 
-Implemented in [`apps/api/src/services/rewardService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/rewardService.js).
+Implemented in `apps/api/src/services/rewardService.js`.
 
-### 12.1 Reward profile creation
+### 12.1 Reward identity model
+
+Profiles are keyed only by:
+
+- `fan_name`
+
+There is no user account, login, or device identity.
+
+### 12.2 Profile creation
 
 Profiles are created lazily when:
 
-- a fan asks for their reward profile
-- a fan submits a crowd report
-- a fan verifies a crowd report
-- a fan is granted detour points
+- a fan requests their profile
+- a fan submits a report
+- a fan verifies a report
+- a fan claims detour points
 
-The profile key is `fan_name`, which is just the user-supplied display name.
+### 12.3 Detour rewards
 
-### 12.2 Detour rewards
-
-Constants:
+Constant:
 
 - `DETOUR_POINTS = 40`
 
 Effect:
 
-- add 40 points
-- increment completed detours
+- `+40` points
+- `+1` completed detour
 
-### 12.3 Report verification rewards
+### 12.4 Verified report rewards
 
-Once a report becomes verified:
+When a report becomes verified:
 
 - original reporter gets:
-  - `+30 points`
-  - `+2 report_reputation`
-  - `+1 live_reports_verified`
-- each other unique verifier gets:
-  - `+10 points`
-  - `+1 report_reputation`
+  - `+30` points
+  - `+2` report reputation
+  - `+1` live reports verified
+- each additional verifier gets:
+  - `+10` points
+  - `+1` report reputation
 
-The backend prevents duplicate payout using `reputation_awarded`.
+Duplicate payout prevention:
 
-### 12.4 Food discount redemption
+- `crowd_reports.reputation_awarded` prevents the verification rewards from being paid more than once
 
-Constants:
+### 12.5 Food discount redemption
+
+Constant:
 
 - `DISCOUNT_THRESHOLD = 200`
 
-When redeemed:
+Behavior:
 
-- subtract 200 points
-- no coupon code or external voucher is generated
+- requires at least 200 points
+- subtracts 200 points
+- leaves reward fulfillment abstract
 
-`availableDiscounts` is derived as:
+Derived frontend values:
 
-`floor(points / 200)`
+- `availableDiscounts = floor(points / 200)`
+- `nextDiscountAt = 200`
 
 ## 13. Frontend Architecture
 
-### 13.1 Shared types
+### 13.1 Routes
 
-Defined in [`apps/web/lib/types.ts`](/abs/path/C:/StadiumFlow/apps/web/lib/types.ts).
+- `/` landing page
+- `/fan` fan dashboard
+- `/organizer` organizer dashboard
 
-Important frontend types:
+### 13.2 Shared types
+
+Defined in `apps/web/lib/types.ts`.
+
+Important types:
 
 - `GateRecord`
 - `CrowdReport`
@@ -839,53 +934,47 @@ Important frontend types:
 - `UserRewardProfile`
 - `RecommendationPayload`
 
-### 13.2 Client API helpers
+### 13.3 Shared API client
 
-Defined in [`apps/web/lib/api.ts`](/abs/path/C:/StadiumFlow/apps/web/lib/api.ts).
+Defined in `apps/web/lib/api.ts`.
 
-Responsibilities:
+Behavior:
 
-- centralizes fetch calls
-- uses `cache: "no-store"` for live endpoints
-- converts non-2xx responses into thrown errors using backend `message` fields when available
-- provides typed helper functions for each API domain
+- centralizes all fetch calls
+- throws a helpful "API unreachable" error if fetch itself fails
+- parses backend error messages when available
+- uses `cache: "no-store"` for live reads
 
-## 14. Frontend Routes And Pages
+## 14. Landing Page
 
-### 14.1 `/`
-
-Defined in [`apps/web/app/page.tsx`](/abs/path/C:/StadiumFlow/apps/web/app/page.tsx).
+Defined in `apps/web/app/page.tsx`.
 
 Purpose:
 
-- landing page
-- entry point to fan and organizer dashboards
-- communicates current product framing
+- explain the product at a high level
+- provide direct links to the fan and organizer dashboards
 
-### 14.2 `/fan`
+Messaging focus:
 
-Defined by:
+- fan routing
+- organizer gate control
+- simulated crowd mode
 
-- page wrapper: [`apps/web/app/fan/page.tsx`](/abs/path/C:/StadiumFlow/apps/web/app/fan/page.tsx)
-- main component: [`apps/web/components/FanDashboard.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/FanDashboard.tsx)
+## 15. Fan Dashboard
 
-### 14.3 `/organizer`
-
-Defined by:
-
-- page wrapper: [`apps/web/app/organizer/page.tsx`](/abs/path/C:/StadiumFlow/apps/web/app/organizer/page.tsx)
-- main component: [`apps/web/components/OrganizerDashboard.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/OrganizerDashboard.tsx)
-
-## 15. Fan Dashboard Behavior
+Implemented in `apps/web/components/FanDashboard.tsx`.
 
 ### 15.1 Initialization
 
-When mounted, the fan dashboard:
+On mount, the fan dashboard:
 
 - restores `fan-name` from `localStorage`
-- fetches updates, reward profile, gates, and live crowd state
+- fetches updates
+- fetches reward profile
+- fetches gates
+- fetches live crowd state
 - requests geolocation
-- fetches a routing recommendation once location is available
+- requests a recommendation once location is available
 
 ### 15.2 Polling
 
@@ -893,89 +982,51 @@ Refresh interval:
 
 - every `15 seconds`
 
-Refreshed bundle:
+Refreshed data:
 
 - updates
 - reward profile
 - gates
 - live crowd state
-- recommendation if location is available
+- recommendation when location is available
 
 ### 15.3 Local state
 
-The fan dashboard maintains:
+The component maintains:
 
-- display name
-- reward profile
-- live updates
-- gate list
-- live crowd snapshot
-- selected gate
-- current recommendation
-- user location
-- detour consent toggle
-- report draft text
-- report target gate
-- selected report crowd level
+- `fanName`
+- `profile`
+- `updates`
+- `gates`
+- `liveState`
+- `recommendation`
+- `userLocation`
+- `selectedGateId`
+- `loadingMessage`
+- `locationState`
+- `feedback`
+- `acceptedDetour`
+- `reportMessage`
+- `reportGateId`
+- `reportLevel`
 
-### 15.4 Geolocation failure handling
+### 15.4 Location behavior
+
+If geolocation succeeds:
+
+- the app computes route recommendations
+- the user sees a location marker and route polyline
 
 If geolocation fails or is blocked:
 
-- the page still loads
-- gate data still appears
-- route scoring is unavailable until location is available
-- a status message explains the limitation
+- the dashboard still loads
+- organizer-defined gates still render
+- route scoring is unavailable
+- verification and report submission become limited by lack of location
 
-### 15.5 Map behavior
+### 15.5 Fan profile card
 
-Implemented by [`apps/web/components/StadiumMap.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/StadiumMap.tsx).
-
-Features:
-
-- Leaflet map
-- OpenStreetMap tiles
-- fan marker
-- gate markers
-- selected route polyline if route coordinates exist
-- route fit-to-bounds behavior
-- click-to-select gate
-
-Marker semantics:
-
-- first gate in the provided list is treated as the "best" gate
-- selected gate gets a visual selected state
-
-### 15.6 Recommendation panel
-
-Implemented by [`apps/web/components/GateRecommendationPanel.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/GateRecommendationPanel.tsx).
-
-Displays:
-
-- recommendation summary
-- walk distance and minutes
-- queue wait
-- total minutes
-- saved minutes
-- route alternatives
-- gate health badge based on status
-
-### 15.7 Crowd reporting
-
-The fan can:
-
-- choose a visible gate
-- choose a crowd level
-- enter a text description
-- submit the report using current GPS coordinates
-
-### 15.8 Crowd verification
-
-The fan can verify pending nearby reports. The UI currently shows `3` as the target confirmation count in the card display, which matches the default backend threshold but is not dynamically sourced from environment settings.
-
-### 15.9 Rewards UI
-
-The fan profile shows:
+Shows:
 
 - total points
 - trust score
@@ -984,20 +1035,124 @@ The fan profile shows:
 - reports proven
 - detours helped
 
+Also includes:
+
+- display-name input
+- detour-points action
+- food-redemption action
+
+### 15.6 Queue and crowd pulse cards
+
+For each visible gate the dashboard shows:
+
+- gate name
+- zone label
+- queue length
+- crowd score
+- verified report count
+- pending report count
+- last signal timestamp
+
+The state label changes between:
+
+- `Steady`
+- `Watching`
+- `Verified pressure`
+
+### 15.7 Charts
+
+Two bar charts are shown:
+
+- Queue Pressure by Gate
+- Crowd Signal Confidence
+
+These are visual summaries only; they are not separate API-backed features.
+
+### 15.8 Live route map
+
+Implemented in `apps/web/components/StadiumMap.tsx`.
+
+Features:
+
+- Leaflet map
+- OpenStreetMap tiles
+- fan location marker
+- gate markers
+- popup metrics per gate
+- route polyline for the selected gate when coordinates exist
+- fit-to-bounds on route or markers
+- click-to-select gate
+
+Marker semantics:
+
+- the first gate in the supplied list is treated as the "best gate"
+- selected gate styling is separate from best-gate styling
+
+### 15.9 Recommendation panel
+
+Implemented in `apps/web/components/GateRecommendationPanel.tsx`.
+
+Displays:
+
+- recommendation summary
+- walking minutes
+- walking distance
+- queue minutes
+- total minutes
+- saved minutes
+- direction hint
+- alternative gates
+- status badge per gate
+
+### 15.10 Detour consent UI
+
+If the recommended gate is not the nearest gate and saves at least 5 minutes:
+
+- the dashboard shows a detour-consent card
+- the fan can explicitly accept the longer walk for points
+
+Important limitation:
+
+- acceptance is a frontend state only
+- backend reward claiming is still user-triggered and not arrival-verified
+
+### 15.11 Crowd report submission
+
 The fan can:
 
-- claim detour points
-- redeem food discounts
+- choose a visible gate
+- choose a crowd level
+- write a text report
+- submit it using current location
 
-Important product nuance:
+Crowd levels exposed in the UI:
 
-- detour point claiming is a frontend-triggered action and is not tied to gate scanning or location validation
+- `low`
+- `medium`
+- `high`
+- `critical`
 
-## 16. Organizer Dashboard Behavior
+### 15.12 Crowd report verification
+
+The fan can verify pending reports from the nearby-reports list.
+
+Current UI behavior:
+
+- shows up to 6 pending reports
+- displays verification count as `x/3`
+
+Important nuance:
+
+- that visible denominator is hard-coded in the frontend
+- it matches the default backend threshold, but it is not dynamically sourced from environment configuration
+
+## 16. Organizer Dashboard
+
+Implemented in `apps/web/components/OrganizerDashboard.tsx`.
 
 ### 16.1 Initialization and polling
 
-The organizer dashboard loads:
+On load it fetches:
 
 - gates
 - updates
@@ -1007,363 +1162,563 @@ Polling interval:
 
 - every `10 seconds`
 
-### 16.2 Top-level organizer features
+### 16.2 Hero metrics
 
-The organizer page includes:
+The organizer dashboard shows:
 
-- live metrics
-- charts
-- command center
-- privacy studio
-- gate placement map
-- live fan-report feed
-- gate list and gate editor
-- organizer update composer
-- shared timeline
+- total gate count
+- total verified crowd signals
+- total pending verifications
 
-### 16.3 Gate management
+### 16.3 Gate map and coordinate editing
 
-Gate editing is managed directly from [`apps/web/components/OrganizerDashboard.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/OrganizerDashboard.tsx).
-
-Editable fields:
-
-- gate code for new gates only
-- gate name
-- display order
-- zone label
-- latitude
-- longitude
-- service rate per minute
-- queue length
-- crowd score
-- visibility
-- direction hint
-
-The organizer can:
-
-- select an existing gate
-- edit its fields
-- create a new gate
-- click the map to set coordinates
-- drag the selected marker to reposition it
-
-### 16.4 Organizer map
-
-Implemented by [`apps/web/components/OrganizerMap.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/OrganizerMap.tsx).
+Implemented in `apps/web/components/OrganizerMap.tsx`.
 
 Features:
 
 - Leaflet map
+- click map to set coordinates
 - draggable marker for selected gate
-- click anywhere to set coordinates
-- draft marker for a new gate
-- auto-fit bounds around current markers
+- draft marker for new gate creation
+- fit-to-bounds on current markers
 
-### 16.5 Organizer update publishing
+Map interactions:
 
-The organizer can post updates with:
+- clicking a gate marker selects it for editing
+- dragging the selected marker updates the form coordinates
+- clicking the map updates the selected or draft coordinates
 
-- `context`: operations, entry, match, food
-- `priority`: important or normal
-- fixed `authorType`: organizer
-- fixed `authorName`: Organizer Desk
+### 16.4 Gate list and gate editor
 
-### 16.6 Live fan-report visibility
+The organizer can:
 
-The organizer can see recent active reports and whether they are:
+- select an existing gate
+- create a new gate
+- toggle visibility
+- edit display order
+- edit zone label
+- edit lat/lng
+- edit service rate
+- edit queue length
+- edit crowd score
+- edit direction hint
 
-- pending
-- verified
+Gate code rules:
 
-This is read-only in the current UI. Organizers do not manually verify reports through a dedicated admin control.
+- editable only for new gates
+- locked for existing gates
+
+### 16.5 Live fan-report visibility
+
+The organizer sees recent active reports with:
+
+- author name
+- status
+- report text
+- gate id
+- confirmation count
+- crowd level
+
+This view is read-only.
+
+There is no manual moderator approval or organizer verification action.
+
+### 16.6 Organizer update composer
+
+Allows organizers to post updates with:
+
+- context: `operations`, `entry`, `match`, `food`
+- priority: `important`, `normal`
+- message text
+
+Fixed author identity in this UI:
+
+- `authorType: "organizer"`
+- `authorName: "Organizer Desk"`
+
+### 16.7 Shared timeline
+
+The organizer timeline displays:
+
+- organizer-posted updates
+- system-generated updates
+
+The current component loads all updates, not just organizer-only updates.
 
 ## 17. Organizer Command Center
 
-Implemented by [`apps/web/components/OrganizerCommandCenter.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/OrganizerCommandCenter.tsx).
+Implemented in `apps/web/components/OrganizerCommandCenter.tsx`.
 
-This is a UI simulation layer for operational control. It does not directly change gate records or route scoring.
+This is a simulation-and-messaging tool, not a direct routing-engine control surface.
 
-Features:
+### 17.1 Purpose
 
-- predefined sectors
-- predefined corridors
-- draggable "Barricade" token
-- corridor status display
-- operator action log
-- sector-specific alert drafting
-- fan-facing reroute copy
+Provide a fast manual-override UI so organizers can:
 
-Behavior:
+- mark corridor disruptions visually
+- prepare sector-specific alert copy
+- publish those alerts into the live updates feed
 
-- dropping barricades changes local corridor state
-- clicking a sector loads an alert template
-- pressing "Blast sector alert" publishes an organizer update through the API
+### 17.2 Visual model
 
-Contexts used by sectors:
+The command center defines:
 
-- `entry`
-- `food`
-- `operations`
-- `match`
+- 6 sectors
+- 4 corridors
+- a draggable `Barricade` token
+
+Sectors:
+
+- Sector 1
+- Sector 2
+- Sector 3
+- Sector 4
+- Club Ring
+- Entry Plaza
+
+Corridors:
+
+- North Walk
+- East Ramp
+- South Ribbon
+- West Link
+
+### 17.3 Barricade behavior
+
+Dragging a barricade onto a corridor:
+
+- creates a local drop marker
+- marks the corridor active
+- logs a recent operator action
+
+Removing a barricade:
+
+- deletes the local drop marker
+- reopens that path in the local UI model
+
+### 17.4 Corridor status logic
+
+Each corridor shows:
+
+- `Open` when it has 0 barricades
+- `Rerouted` when it has 1 barricade
+- `Closed` when it has more than 1 barricade
+
+### 17.5 Alert blast behavior
+
+Selecting a sector:
+
+- loads a predefined alert template
+- sets the default context for that sector
+
+Clicking `Blast sector alert`:
+
+- sends the current draft through the real updates API
+- uses author name `Command Center`
+- uses priority `important`
+
+Important limitation:
+
+- this does not mutate gate records
+- this does not change route scoring directly
+- it only creates a feed update
 
 ## 18. Crowd Privacy Studio
 
-Implemented by [`apps/web/components/CrowdPrivacyStudio.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/CrowdPrivacyStudio.tsx).
+Implemented in `apps/web/components/CrowdPrivacyStudio.tsx`.
 
-This is one of the more advanced parts of the frontend.
+This is one of the most feature-rich parts of the frontend.
 
 ### 18.1 Goal
 
-Let organizers blur faces in crowd media on-device before saving or sharing it.
+Blur faces in crowd media entirely in the browser before export or sharing.
 
-### 18.2 Modes
+### 18.2 Supported modes
 
-- photo upload mode
+- uploaded crowd photo mode
 - live camera mode
-- manual masking mode
+- manual mask drawing mode
 
-### 18.3 Detection strategy
+### 18.3 Auto-detection strategy
 
-Automatic face detection attempts, in order:
+Detection is attempted in this order:
 
 1. browser `FaceDetector` API
 2. OpenCV.js Haar cascade fallback
 
-### 18.4 OpenCV loading
+### 18.4 OpenCV runtime loading
 
-The component:
+The component dynamically loads:
 
-- loads `https://docs.opencv.org/4.x/opencv.js`
-- downloads the cascade XML from GitHub raw content
-- mounts the cascade into OpenCV's virtual filesystem
-- initializes a classifier
+- `https://docs.opencv.org/4.x/opencv.js`
 
-### 18.5 Rendering strategy
+Then downloads:
 
-Blurring is applied on a canvas:
+- `https://raw.githubusercontent.com/opencv/opencv/4.x/data/haarcascades/haarcascade_frontalface_default.xml`
 
-- source frame is drawn
-- each detected or manual region is pixelated and blurred
-- if OpenCV is ready, an additional Gaussian blur pass is attempted
+Then mounts the cascade into OpenCV's virtual filesystem and initializes a classifier.
 
-### 18.6 Manual masking
+### 18.5 Photo flow
 
-When manual mode is on:
+When a photo is uploaded:
 
-- pointer down records start point
-- pointer up creates a blur rectangle
-- boxes can be removed individually
+- the app creates an object URL
+- clears previous masks
+- attempts auto face detection
+- preserves any manual boxes
+- renders the blurred frame to a canvas
 
-### 18.7 Export
+### 18.6 Live camera flow
 
-The masked frame can be exported as a PNG using `canvas.toDataURL`.
+When live camera mode is enabled:
 
-### 18.8 Operational caveats
+- the browser requests camera access
+- the stream is attached to a hidden video element
+- every animation frame redraws the protected image
+- every 10th frame attempts face detection
+- auto and manual boxes are merged
 
-- browser support varies for `FaceDetector`
-- camera access requires user permission
-- OpenCV and the cascade load from external URLs
-- no server-side processing exists for privacy masking
+### 18.7 Blur implementation
 
-## 19. Styling And UX Layer
+Canvas stage:
 
-### 19.1 Global styling
+- original frame is drawn
+- each region is first pixelated through downsample and upsample
+- then blurred with canvas filters
 
-Primary styles live in:
+If OpenCV is available:
 
-- [`apps/web/app/globals.css`](/abs/path/C:/StadiumFlow/apps/web/app/globals.css)
-- inline critical styles in [`apps/web/app/layout.tsx`](/abs/path/C:/StadiumFlow/apps/web/app/layout.tsx)
+- a Gaussian blur pass is also attempted on the masked regions
 
-Visual direction:
+### 18.8 Manual masking
 
-- warm paper-toned background
-- green and rust accent colors
-- rounded high-card layout
-- dashboard-oriented information density
+When manual mode is active:
 
-### 19.2 Metadata
+- pointer down stores a start point
+- pointer up creates a rectangular privacy box
+- boxes smaller than 16 px in width or height are ignored
+- each box can be removed individually by clicking it
 
-Declared in [`apps/web/app/layout.tsx`](/abs/path/C:/StadiumFlow/apps/web/app/layout.tsx):
+### 18.9 Export
+
+The masked frame can be downloaded as:
+
+- `protected-crowd-<timestamp>.png`
+
+Implementation:
+
+- `canvas.toDataURL("image/png")`
+
+### 18.10 Runtime caveats
+
+- browser support for `FaceDetector` varies
+- camera access depends on user permission
+- OpenCV load depends on external network access
+- cascade download depends on external network access
+- there is no server-side masking path
+
+## 19. Shared UI Infrastructure
+
+### 19.1 App header
+
+Implemented in `apps/web/components/AppHeader.tsx`.
+
+Features:
+
+- brand link to home
+- dashboard navigation
+- sign-out button on non-home pages
+
+Sign-out behavior:
+
+- removes `fan-name` from `localStorage`
+- routes back to `/`
+
+There is no real auth session to terminate.
+
+### 19.2 Bar chart component
+
+Implemented in `apps/web/components/LiveBarChart.tsx`.
+
+Purpose:
+
+- lightweight dashboard visualization
+
+Behavior:
+
+- auto-normalizes bar height against the largest current value
+- supports tones `neutral`, `accent`, `alert`, and `cool`
+
+### 19.3 Global styling
+
+Defined primarily in:
+
+- `apps/web/app/layout.tsx`
+- `apps/web/app/globals.css`
+
+Notable design direction:
+
+- light paper-toned background
+- green and rust accent palette
+- rounded card-heavy dashboard style
+- map-first layout for both fan and organizer views
+
+### 19.4 Metadata
+
+Declared in `apps/web/app/layout.tsx`:
 
 - title: `Stadium Flow Advisory`
 - description: `Mathematical crowd routing for stadium entry and live match advisories.`
 
-## 20. External Dependencies And Integrations
+## 20. External Dependencies And Network Touchpoints
 
 ### 20.1 OSRM
 
-Used for walking-route calculation.
+Used by the backend for walking routes.
 
-Risk:
+Risks:
 
 - public shared service
-- no API key
-- no retry or caching layer
+- no API key or private quota
+- no caching layer
+- no retry policy
 
 ### 20.2 OpenStreetMap tiles
 
-Used by both Leaflet maps.
+Used by both frontend maps.
 
 ### 20.3 Browser geolocation
 
-Used by the fan dashboard for live routing and crowd report verification.
+Required for:
 
-### 20.4 Browser camera and media APIs
+- live routing
+- crowd report submission with current location
+- nearby report verification
 
-Used by the privacy studio.
+### 20.4 Browser media APIs
 
-### 20.5 Face detection and OpenCV
+Used by:
 
-Used by the privacy studio.
+- live privacy camera mode
 
-## 21. Deployment
+### 20.5 External OpenCV assets
 
-### 21.1 Render Blueprint
+Used by:
 
-Defined in [`render.yaml`](/abs/path/C:/StadiumFlow/render.yaml).
+- privacy studio auto-detection fallback
 
-Service characteristics:
+## 21. Security And Trust Limitations
 
-- service name: `stadiumflow-api`
-- runtime: `node`
-- plan: `starter`
-- root directory: `apps/api`
-- build command: `npm install`
-- start command: `npm start`
-- health check: `/health`
+These are significant and should be treated as core product constraints, not footnotes.
 
-Environment values set in blueprint:
+### 21.1 No authentication
 
-- `SQLITE_PATH=/opt/render/project/src/data/stadium-flow.sqlite`
-- `REPORT_VERIFICATION_THRESHOLD=3`
-- `REPORT_RADIUS_METERS=160`
-- `REPORT_WINDOW_MINUTES=8`
+The repository currently has:
 
-Required manual environment variable:
+- no login
+- no sessions
+- no user accounts
+- no role-based authorization
 
-- `CLIENT_ORIGIN`
+Consequences:
 
-### 21.2 Persistent disk
+- anyone who can reach the API can modify gates
+- anyone can publish organizer updates
+- anyone can claim detour points for any name
+- anyone can redeem points for any name
 
-Render disk config:
-
-- mount path: `/opt/render/project/src/data`
-- size: `1 GB`
-
-This is required because the API persists SQLite to disk.
-
-## 22. Security And Product Gaps
-
-These are important because they affect how the documentation should be interpreted.
-
-### 22.1 No authentication
-
-There is:
-
-- no login system
-- no session handling
-- no authorization checks
-- no organizer-only server protection
-
-Any client that can reach the API can:
-
-- create or update gates
-- create organizer updates
-- award detour points
-- redeem rewards for any `fanName`
-
-### 22.2 No abuse prevention
-
-There is:
-
-- no rate limiting
-- no anti-spam controls
-- no CSRF protection model
-- no replay protection for detour claiming
-
-### 22.3 Trust model is display-name based
+### 21.2 Display-name identity only
 
 Reward identity is keyed only by `fan_name`.
 
 Consequences:
 
-- name collisions are possible
-- impersonation is trivial
-- rewards are not bound to user accounts
+- collisions are possible
+- impersonation is easy
+- rewards are not device-bound or account-bound
 
-### 22.4 Limited validation
+### 21.3 No abuse prevention
 
-The backend checks for required fields in several places, but it does not use a schema-validation library. Numeric bounds and enum enforcement are partly implicit rather than explicit.
+Missing controls:
 
-## 23. Performance Characteristics
+- rate limiting
+- spam throttling
+- replay protection
+- CSRF model
+- moderation workflow
 
-Current implementation is acceptable for a prototype, but there are constraints:
+### 21.4 Minimal validation
 
-- full DB export occurs on every write
-- frontend polling is simple fixed-interval polling
-- no websocket or SSE live updates
-- no pagination on updates beyond server-side `LIMIT`
-- no caching of OSRM responses
+The backend validates presence of several required fields, but it does not use a schema validation library.
 
-## 24. Known Repository Notes
+Consequences:
 
-- `contracts/` exists but is empty in the current repository state.
-- `README.md` and `DOCUMENTATION.md` existed previously but were more generic than the actual code.
-- There are no automated tests, migration files, or database snapshots documented as part of a formal release process.
+- enum enforcement is loose
+- bounds checking is limited
+- malformed numeric data may still be accepted if `Number(...)` produces finite values
 
-## 25. Suggested Improvements
+## 22. Performance And Operational Characteristics
 
-### 25.1 Backend
+Current constraints:
 
-- add request-schema validation
-- add auth and RBAC
-- add route recommendation caching
-- add event-based detour confirmation
+- the DB file is exported on every write
+- dashboards use fixed polling rather than push updates
+- no websocket or SSE transport exists
+- no OSRM response cache exists
+- live crowd calculations are simple and synchronous
+- report filtering is small-scale and in-memory after recent-query retrieval
+
+For a prototype this is acceptable. For a live venue system at scale it would need rework.
+
+## 23. Known Implementation Quirks
+
+### 23.1 Duplicate DB-path pattern in repo
+
+The repository contains both:
+
+- `apps/api/data/stadium-flow.sqlite`
+- `apps/api/apps/api/data/stadium-flow.sqlite`
+
+This likely came from two different `SQLITE_PATH` conventions being used during development.
+
+### 23.2 Hard-coded verification target in fan UI
+
+The fan dashboard renders pending reports as:
+
+- `x/3 confirmations`
+
+The backend threshold is configurable, but the frontend display is currently hard-coded to `3`.
+
+### 23.3 Reward messaging is ahead of enforcement
+
+The recommendation and reward UI talk about accepting a reroute and confirming arrival later, but the backend does not verify arrival at the recommended gate.
+
+### 23.4 Command center is messaging-first
+
+The command center looks like an operational control surface, but it currently publishes alerts only. It does not mutate routing inputs directly.
+
+## 24. Local Development Guide
+
+### 24.1 Install
+
+From repo root:
+
+```bash
+npm install
+```
+
+### 24.2 Configure API
+
+Create `apps/api/.env` with:
+
+```env
+PORT=4000
+CLIENT_ORIGIN=http://localhost:3000
+REPORT_VERIFICATION_THRESHOLD=3
+REPORT_RADIUS_METERS=160
+REPORT_WINDOW_MINUTES=8
+```
+
+Optional:
+
+```env
+SQLITE_PATH=./data/stadium-flow.sqlite
+```
+
+### 24.3 Configure web
+
+Create `apps/web/.env.local` with:
+
+```env
+NEXT_PUBLIC_API_BASE_URL=http://localhost:4000/api
+```
+
+### 24.4 Start services
+
+API:
+
+```bash
+npm run dev:api
+```
+
+Web:
+
+```bash
+npm run dev:web
+```
+
+### 24.5 Default URLs
+
+- frontend: `http://localhost:3000`
+- API: `http://localhost:4000/api`
+- health: `http://localhost:4000/health`
+
+## 25. File Guide
+
+Most important files for understanding the project:
+
+- `apps/api/src/server.js`
+- `apps/api/src/app.js`
+- `apps/api/src/config/env.js`
+- `apps/api/src/config/database.js`
+- `apps/api/src/services/seedService.js`
+- `apps/api/src/services/routingService.js`
+- `apps/api/src/services/osrmService.js`
+- `apps/api/src/services/crowdReportService.js`
+- `apps/api/src/services/reportCacheService.js`
+- `apps/api/src/services/rewardService.js`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/types.ts`
+- `apps/web/components/FanDashboard.tsx`
+- `apps/web/components/StadiumMap.tsx`
+- `apps/web/components/GateRecommendationPanel.tsx`
+- `apps/web/components/OrganizerDashboard.tsx`
+- `apps/web/components/OrganizerMap.tsx`
+- `apps/web/components/OrganizerCommandCenter.tsx`
+- `apps/web/components/CrowdPrivacyStudio.tsx`
+
+## 26. Suggested Next Engineering Steps
+
+### 26.1 Backend
+
+- add schema-based request validation
+- add auth and organizer authorization
+- add structured error middleware
 - add decay logic for stale crowd pressure
-- add centralized error middleware
+- add anti-abuse controls around reports and rewards
+- add recommendation caching
 
-### 25.2 Frontend
+### 26.2 Frontend
 
+- source verification thresholds dynamically from the backend
+- add better panel-specific loading and error states
+- add moderator workflows for reports
 - replace polling with websocket or SSE updates
-- surface backend thresholds dynamically in UI
-- add explicit loading/error states per panel
-- add organizer controls for reviewing or moderating reports
 
-### 25.3 Data and operations
+### 26.3 Data and operations
 
-- migrate from file-export persistence to a real SQLite server process or Postgres for multi-instance deployment
-- add analytics and audit logging
-- add tests for routing, report verification, and rewards
+- replace per-write DB export with a more scalable persistence strategy
+- add tests for routing, verification, and rewards
+- add CI
+- decide whether `contracts/` will hold shared API schemas or remove it
 
-## 26. Quick File Guide
+## 27. Summary
 
-High-value files to read first:
+The project already implements a surprising amount of end-to-end behavior for a prototype:
 
-- [`README.md`](/abs/path/C:/StadiumFlow/README.md)
-- [`apps/api/src/server.js`](/abs/path/C:/StadiumFlow/apps/api/src/server.js)
-- [`apps/api/src/config/database.js`](/abs/path/C:/StadiumFlow/apps/api/src/config/database.js)
-- [`apps/api/src/services/routingService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/routingService.js)
-- [`apps/api/src/services/crowdReportService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/crowdReportService.js)
-- [`apps/api/src/services/rewardService.js`](/abs/path/C:/StadiumFlow/apps/api/src/services/rewardService.js)
-- [`apps/web/components/FanDashboard.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/FanDashboard.tsx)
-- [`apps/web/components/OrganizerDashboard.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/OrganizerDashboard.tsx)
-- [`apps/web/components/CrowdPrivacyStudio.tsx`](/abs/path/C:/StadiumFlow/apps/web/components/CrowdPrivacyStudio.tsx)
+- live gate recommendation based on walking plus queue time
+- gate administration
+- fan crowd reporting and nearby verification
+- routing impact from verified reports
+- reward and detour tracking
+- organizer alerts
+- a privacy-focused browser masking tool
 
-## 27. Final Summary
+Its main readiness gaps are not feature completeness but operational trust:
 
-This repository is a solid full-stack prototype for live stadium entry management. Its strongest implemented areas are:
+- no authentication
+- no abuse resistance
+- no tests
+- no production-grade deployment assets in the repo
 
-- end-to-end gate routing
-- fan reporting and verification loop
-- organizer gate control
-- visual dashboards
-- privacy masking UX
-
-Its weakest production-readiness areas are:
-
-- authentication
-- abuse resistance
-- testing
-- durable multi-user operational guarantees
-
-If you need deeper code walkthroughs beyond this document, the next most useful step would be module-by-module docs for the API services or a true OpenAPI spec for all endpoints.
+For a demo, hackathon, or prototype showcase, the codebase is coherent and feature-rich. For real venue operations, the next work should focus on trust, validation, and operational hardening.
